@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { VoiceOrb } from "./VoiceOrb";
 import logo from "@/assets/shealth-logo.png";
+import { useToast } from "@/hooks/use-toast";
 
 type VoiceState = "idle" | "listening" | "processing" | "speaking";
 
@@ -11,16 +12,156 @@ const stateMessages = {
   speaking: "Shealth.ai is speaking...",
 };
 
+// N8N Webhook URL - Your backend endpoint
+const N8N_WEBHOOK_URL = "https://simranbaicheshealthai.app.n8n.cloud/webhook/shealth-api";
+
 export const VoiceAssistant = () => {
   const [state, setState] = useState<VoiceState>("idle");
+  const { toast } = useToast();
+  const recognitionRef = useRef<any>(null);
+  const synthesisRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // Initialize speech recognition
+  useEffect(() => {
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+      const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false;
+      recognitionRef.current.interimResults = false;
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        console.log('User said:', transcript);
+        handleUserSpeech(transcript);
+      };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+        toast({
+          title: "Error",
+          description: "Could not recognize speech. Please try again.",
+          variant: "destructive",
+        });
+        setState("idle");
+      };
+
+      recognitionRef.current.onend = () => {
+        console.log('Speech recognition ended');
+      };
+    } else {
+      toast({
+        title: "Not Supported",
+        description: "Speech recognition is not supported in this browser.",
+        variant: "destructive",
+      });
+    }
+
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
+
+  const handleUserSpeech = async (transcript: string) => {
+    setState("processing");
+
+    try {
+      // Send the transcript to your n8n webhook
+      const response = await fetch(N8N_WEBHOOK_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: transcript,
+          timestamp: new Date().toISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to get response from backend");
+      }
+
+      const data = await response.json();
+      console.log('Backend response:', data);
+
+      // Speak the response
+      const responseText = data.response || data.message || "I didn't get a response from the backend.";
+      speakResponse(responseText);
+
+    } catch (error) {
+      console.error('Error communicating with backend:', error);
+      toast({
+        title: "Error",
+        description: "Failed to communicate with the backend.",
+        variant: "destructive",
+      });
+      setState("idle");
+    }
+  };
+
+  const speakResponse = (text: string) => {
+    setState("speaking");
+
+    if ('speechSynthesis' in window) {
+      // Cancel any ongoing speech
+      window.speechSynthesis.cancel();
+
+      synthesisRef.current = new SpeechSynthesisUtterance(text);
+      synthesisRef.current.lang = 'en-US';
+      synthesisRef.current.rate = 1.0;
+      synthesisRef.current.pitch = 1.0;
+
+      synthesisRef.current.onend = () => {
+        console.log('Speech synthesis finished');
+        setState("idle");
+      };
+
+      synthesisRef.current.onerror = (event) => {
+        console.error('Speech synthesis error:', event);
+        setState("idle");
+      };
+
+      window.speechSynthesis.speak(synthesisRef.current);
+    } else {
+      // Fallback: just show the text
+      toast({
+        title: "Response",
+        description: text,
+      });
+      setState("idle");
+    }
+  };
 
   const handleOrbClick = () => {
     if (state === "idle") {
+      if (!recognitionRef.current) {
+        toast({
+          title: "Not Supported",
+          description: "Speech recognition is not available in this browser. Please use Chrome, Edge, or Safari.",
+          variant: "destructive",
+        });
+        return;
+      }
+
       setState("listening");
-      // Simulate state transitions
-      setTimeout(() => setState("processing"), 3000);
-      setTimeout(() => setState("speaking"), 5000);
-      setTimeout(() => setState("idle"), 8000);
+      try {
+        recognitionRef.current.start();
+      } catch (error) {
+        console.error('Error starting recognition:', error);
+        toast({
+          title: "Error",
+          description: "Could not start voice recognition.",
+          variant: "destructive",
+        });
+        setState("idle");
+      }
+    } else if (state === "speaking") {
+      // Stop speaking if clicked during speech
+      window.speechSynthesis.cancel();
+      setState("idle");
     }
   };
 
